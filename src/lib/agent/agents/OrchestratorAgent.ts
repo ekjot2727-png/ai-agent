@@ -15,6 +15,7 @@ import { FailureHandler, getFailureHandler, FailureAnalysis, RecoveryPlan } from
 import { CodeRabbit, getCodeRabbit, CodeRabbitReview } from '../integrations';
 import { AgentPersona, getAgentPersona, NarrativeEntry, AgentDecision } from '../persona';
 import { SafetyValidator, getSafetyValidator, SafetyValidationResult } from '../safety';
+import { IntentClassifier, getIntentClassifier, IntentClassification } from '../intent';
 
 // ============================================================================
 // Types
@@ -60,6 +61,7 @@ export interface MultiAgentResult {
   narratives?: NarrativeEntry[];
   agentDecisions?: AgentDecision[];
   safetyValidation?: SafetyValidationResult;
+  intentClassification?: IntentClassification;
 }
 
 const DEFAULT_CONFIG: OrchestratorConfig = {
@@ -88,6 +90,7 @@ export class OrchestratorAgent extends BaseAgent {
   private codeRabbit: CodeRabbit;
   private persona: AgentPersona;
   private safetyValidator: SafetyValidator;
+  private intentClassifier: IntentClassifier;
 
   constructor(config: Partial<OrchestratorConfig> = {}) {
     super('orchestrator', 'OrchestratorAgent');
@@ -106,6 +109,7 @@ export class OrchestratorAgent extends BaseAgent {
     this.codeRabbit = getCodeRabbit();
     this.persona = getAgentPersona();
     this.safetyValidator = getSafetyValidator();
+    this.intentClassifier = getIntentClassifier();
   }
 
   // --------------------------------------------------------------------------
@@ -138,11 +142,88 @@ export class OrchestratorAgent extends BaseAgent {
     let recoveryPlans: RecoveryPlan[] = [];
     let codeReview: CodeRabbitReview | undefined;
     let safetyValidation: SafetyValidationResult | undefined;
+    let intentClassification: IntentClassification | undefined;
     let error: string | undefined;
     let success = false;
 
     try {
-      // Phase 0: Safety Validation
+      // Phase 0: Intent Classification
+      this.observe('Classifying user intent', 0.98);
+      intentClassification = this.intentClassifier.classify(context.goal);
+      
+      this.info('Intent classified', { 
+        type: intentClassification.intentType,
+        confidence: intentClassification.confidence 
+      });
+
+      // Handle INFORMATION_QUERY - return explanation without execution
+      if (intentClassification.intentType === 'INFORMATION_QUERY') {
+        this.observe('Detected information query - providing explanation', 0.95);
+        
+        const explanation = this.intentClassifier.generateExplanation(context.goal);
+        
+        this.persona.speak(
+          explanation,
+          'planning',
+          0.9
+        );
+        
+        const completedAt = new Date();
+        return this.createResult(
+          runId,
+          context.goal,
+          true,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          startedAt,
+          completedAt,
+          `Information query handled: ${explanation}`,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          intentClassification
+        );
+      }
+
+      // Handle AMBIGUOUS - request clarification
+      if (intentClassification.intentType === 'AMBIGUOUS') {
+        this.warn('Input is ambiguous', { 
+          reasoning: intentClassification.reasoning 
+        });
+        
+        this.persona.speak(
+          `Your request is unclear. ${intentClassification.suggestedAction}. Please provide more specific details about what you want to accomplish.`,
+          'planning',
+          0.7
+        );
+        
+        const completedAt = new Date();
+        return this.createResult(
+          runId,
+          context.goal,
+          false,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          startedAt,
+          completedAt,
+          `Clarification needed: ${intentClassification.reasoning}`,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          intentClassification
+        );
+      }
+
+      // Continue with EXECUTION_GOAL...
+      this.info('Processing execution goal', { confidence: intentClassification.confidence });
+
+      // Phase 1: Safety Validation
       this.observe('Validating goal safety', 0.95);
       safetyValidation = this.safetyValidator.validateGoal(context.goal, context.userContext);
       
@@ -174,13 +255,14 @@ export class OrchestratorAgent extends BaseAgent {
           undefined,
           undefined,
           undefined,
-          safetyValidation
+          safetyValidation,
+          intentClassification
         );
       }
       
       this.info('Goal safety validated', { approved: true });
 
-      // Phase 1: Planning
+      // Phase 2: Planning
       this.observe('Initiating planning phase', 0.95);
       plan = await this.runPlanningPhase(context);
       
@@ -194,7 +276,7 @@ export class OrchestratorAgent extends BaseAgent {
         0.88
       );
       
-      // Phase 2: Execution (if not skipped)
+      // Phase 3: Execution (if not skipped)
       if (!this.config.skipExecution && plan) {
         this.persona.speak(
           this.persona.narrateExecutionStart(),
@@ -322,7 +404,8 @@ export class OrchestratorAgent extends BaseAgent {
       failureAnalysis,
       recoveryPlans,
       codeReview,
-      safetyValidation
+      safetyValidation,
+      intentClassification
     );
   }
 
@@ -627,7 +710,8 @@ export class OrchestratorAgent extends BaseAgent {
     failureAnalysis?: FailureAnalysis,
     recoveryPlans?: RecoveryPlan[],
     codeReview?: CodeRabbitReview,
-    safetyValidation?: SafetyValidationResult
+    safetyValidation?: SafetyValidationResult,
+    intentClassification?: IntentClassification
   ): MultiAgentResult {
     const start = startedAt || new Date();
     const end = completedAt || new Date();
@@ -679,6 +763,7 @@ export class OrchestratorAgent extends BaseAgent {
       narratives,
       agentDecisions,
       safetyValidation,
+      intentClassification,
     };
   }
 

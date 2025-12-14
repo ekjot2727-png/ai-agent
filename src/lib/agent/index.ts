@@ -232,6 +232,18 @@ export {
 } from './safety';
 
 // ============================================================================
+// Intent Classification System
+// ============================================================================
+
+export {
+  IntentClassifier,
+  getIntentClassifier,
+  resetIntentClassifier,
+  type IntentType,
+  type IntentClassification,
+} from './intent';
+
+// ============================================================================
 // Plan Comparison System
 // ============================================================================
 
