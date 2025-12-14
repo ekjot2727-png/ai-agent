@@ -1,21 +1,38 @@
 /**
- * AutoOpsAgent - Oumi-Style Autonomous AI Agent
+ * AutoOpsAgent - Autonomous AI Agent with Hybrid Capabilities
  * 
- * A goal-driven agent that:
- * 1. Accepts a user goal as input
- * 2. Reasons about the goal with explainable logic
- * 3. Breaks it into structured tasks
- * 4. Decides which workflow to trigger
- * 5. Generates a reflection summary
+ * A fully autonomous agent that:
+ * 1. Classifies user intent (information query vs execution goal)
+ * 2. Routes to appropriate handler (InformationAgent or execution pipeline)
+ * 3. Provides explainable reasoning for all actions
+ * 4. Maintains safety guardrails and memory
+ * 5. Delivers structured responses with confidence scores
  * 
- * All reasoning is explainable and logged for transparency.
+ * Unified Interface: run(input: string)
  */
 
 import { v4 as uuidv4 } from 'uuid';
+import { getIntentClassifier, IntentClassification, IntentType } from './intent';
+import { getInformationAgent, InformationResponse } from './agents/InformationAgent';
+import { createOrchestrator, MultiAgentResult } from './agents/OrchestratorAgent';
 
 // ============================================================================
-// Types
+// Types - Unified Agent Response
 // ============================================================================
+
+export interface AgentResponse {
+  id: string;
+  timestamp: Date;
+  input: string;
+  intent: IntentClassification;
+  response: string;
+  executionDetails?: MultiAgentResult;
+  informationDetails?: InformationResponse;
+  reasoning: string;
+  confidence: number;
+  success: boolean;
+  mode: 'information' | 'execution' | 'clarification';
+}
 
 export interface AgentGoal {
   id: string;
@@ -164,6 +181,8 @@ export class AutoOpsAgent {
   private config: AgentConfig;
   private logs: AgentLog[] = [];
   private onLogCallback?: (log: AgentLog) => void;
+  private intentClassifier = getIntentClassifier();
+  private informationAgent = getInformationAgent();
 
   constructor(config: Partial<AgentConfig> = {}, onLog?: (log: AgentLog) => void) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -171,7 +190,197 @@ export class AutoOpsAgent {
   }
 
   // ==========================================================================
-  // Public API
+  // Unified Public API
+  // ==========================================================================
+
+  /**
+   * Unified run method - Main entry point for all agent interactions
+   * 
+   * Classifies intent and routes to appropriate handler:
+   * - INFORMATION_QUERY → InformationAgent (no execution)
+   * - EXECUTION_GOAL → Multi-agent orchestration
+   * - AMBIGUOUS → Request clarification
+   * - UNSAFE → Block with explanation
+   */
+  async run(input: string, context?: string): Promise<AgentResponse> {
+    const startTime = Date.now();
+    const responseId = uuidv4();
+    
+    this.log('info', 'planning', `Processing input: "${input.slice(0, 50)}..."`);
+
+    // Phase 1: Classify Intent
+    const intent = this.intentClassifier.classify(input);
+    this.log('info', 'planning', `Intent classified as: ${intent.intentType} (confidence: ${intent.confidence})`);
+
+    // Phase 2: Route based on intent
+    let response: AgentResponse;
+
+    switch (intent.intentType) {
+      case 'INFORMATION_QUERY':
+        response = await this.handleInformationQuery(responseId, input, intent);
+        break;
+
+      case 'EXECUTION_GOAL':
+        response = await this.handleExecutionGoal(responseId, input, context, intent);
+        break;
+
+      case 'AMBIGUOUS':
+        response = this.handleAmbiguousInput(responseId, input, intent);
+        break;
+
+      default:
+        response = this.handleUnsafeInput(responseId, input, intent);
+        break;
+    }
+
+    const duration = Date.now() - startTime;
+    this.log('info', 'idle', `Request completed in ${duration}ms - Mode: ${response.mode}`);
+
+    return response;
+  }
+
+  // ==========================================================================
+  // Intent Handlers
+  // ==========================================================================
+
+  /**
+   * Handle information queries - answer without execution
+   */
+  private async handleInformationQuery(
+    id: string,
+    input: string,
+    intent: IntentClassification
+  ): Promise<AgentResponse> {
+    this.log('info', 'planning', 'Processing as information query');
+
+    const infoResponse = await this.informationAgent.processQuery(input);
+
+    return {
+      id,
+      timestamp: new Date(),
+      input,
+      intent,
+      response: infoResponse.answer,
+      informationDetails: infoResponse,
+      reasoning: `Classified as information query with ${intent.confidence} confidence. ${infoResponse.reasoning}`,
+      confidence: infoResponse.confidence,
+      success: true,
+      mode: 'information',
+    };
+  }
+
+  /**
+   * Handle execution goals - full multi-agent orchestration
+   */
+  private async handleExecutionGoal(
+    id: string,
+    input: string,
+    context: string | undefined,
+    intent: IntentClassification
+  ): Promise<AgentResponse> {
+    this.log('info', 'executing', 'Processing as execution goal');
+
+    try {
+      const orchestrator = createOrchestrator({
+        enableOptimization: true,
+        verboseLogging: this.config.verboseLogging,
+      });
+
+      const result = await orchestrator.process({
+        goal: input,
+        userContext: context,
+        sharedState: new Map(),
+        messages: [],
+      });
+
+      return {
+        id,
+        timestamp: new Date(),
+        input,
+        intent,
+        response: result.summary,
+        executionDetails: result,
+        reasoning: `Classified as execution goal. Orchestrated ${result.phases.length} phases: ${result.phases.map(p => p.name).join(' → ')}`,
+        confidence: intent.confidence,
+        success: result.success,
+        mode: 'execution',
+      };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      this.log('error', 'executing', `Execution failed: ${errorMsg}`);
+
+      return {
+        id,
+        timestamp: new Date(),
+        input,
+        intent,
+        response: `Execution failed: ${errorMsg}`,
+        reasoning: `Attempted execution but encountered error: ${errorMsg}`,
+        confidence: 0,
+        success: false,
+        mode: 'execution',
+      };
+    }
+  }
+
+  /**
+   * Handle ambiguous inputs - request clarification
+   */
+  private handleAmbiguousInput(
+    id: string,
+    input: string,
+    intent: IntentClassification
+  ): AgentResponse {
+    this.log('warning', 'planning', 'Input is ambiguous - requesting clarification');
+
+    const clarificationMsg = `Your request is unclear. ${intent.suggestedAction}. 
+
+Please provide more specific details:
+- If you want information, ask a specific question (e.g., "What is the planner agent?")
+- If you want to execute a task, provide a clear goal (e.g., "Create a CI/CD pipeline for Node.js")
+
+Examples of clear inputs:
+• Information: "How does the learning system work?"
+• Execution: "Build a data pipeline for user analytics"`;
+
+    return {
+      id,
+      timestamp: new Date(),
+      input,
+      intent,
+      response: clarificationMsg,
+      reasoning: intent.reasoning,
+      confidence: intent.confidence,
+      success: false,
+      mode: 'clarification',
+    };
+  }
+
+  /**
+   * Handle unsafe inputs - block with explanation
+   */
+  private handleUnsafeInput(
+    id: string,
+    input: string,
+    intent: IntentClassification
+  ): AgentResponse {
+    this.log('warning', 'planning', 'Input flagged as unsafe');
+
+    return {
+      id,
+      timestamp: new Date(),
+      input,
+      intent,
+      response: `This request cannot be processed due to safety concerns. ${intent.reasoning}`,
+      reasoning: `Blocked for safety: ${intent.reasoning}`,
+      confidence: intent.confidence,
+      success: false,
+      mode: 'clarification',
+    };
+  }
+
+  // ==========================================================================
+  // Legacy API (for backward compatibility)
   // ==========================================================================
 
   /**

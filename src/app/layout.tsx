@@ -40,10 +40,6 @@ export default function RootLayout({
                     <span className="text-xl">📚</span>
                     <span className="ml-1 text-sm hidden sm:inline">Docs</span>
                   </a>
-                  <div className="h-6 w-px bg-gray-200" />
-                  <span className="text-xs bg-primary-100 text-primary-700 px-2 py-1 rounded-full">
-                    Hackathon Demo
-                  </span>
                 </nav>
               </div>
             </div>

@@ -39,6 +39,13 @@ export {
   type OptimizationResult,
 } from './OptimizerAgent';
 
+export {
+  InformationAgent,
+  getInformationAgent,
+  resetInformationAgent,
+  type InformationResponse,
+} from './InformationAgent';
+
 // Orchestrator
 export { 
   OrchestratorAgent,

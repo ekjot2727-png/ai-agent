@@ -1,25 +1,23 @@
 /**
- * Multi-Agent Goal Processing API Route
+ * Unified Agent API Route
  * 
  * POST /api/agent/goal
  * 
- * Accepts a user goal, processes it through the multi-agent system:
- * - PlannerAgent: Breaks down goal into tasks
- * - ExecutorAgent: Selects workflow and executes tasks
- * - ReflectionAgent: Analyzes results and generates insights
- * - OptimizerAgent: Suggests improvements based on history
+ * Unified interface for the autonomous AI agent:
+ * - Classifies intent (information query vs execution goal)
+ * - Routes to InformationAgent or multi-agent orchestration
+ * - Returns structured response with reasoning
  * 
- * Returns comprehensive results including:
- * - Task plan with reasoning
- * - Execution status and timeline
- * - Reflection with insights and score
- * - Optimization suggestions
- * - Failure analysis & recovery plans
- * - CodeRabbit AI review
- * - Agent narratives & decisions
+ * Modes:
+ * - INFORMATION: Direct answers without workflow execution
+ * - EXECUTION: Full multi-agent pipeline (planner → executor → reflection → optimizer)
+ * - CLARIFICATION: Requests more specific input
+ * 
+ * All responses include intent classification and explainable reasoning.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { AutoOpsAgent, AgentResponse } from '@/lib/agent/AutoOpsAgent';
 import { 
   createOrchestrator,
   MultiAgentResult,
@@ -387,7 +385,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<GoalRespo
       );
     }
 
-    if (goal.trim().length < 10) {
+    if (goal.trim().length < 5) {
       return NextResponse.json(
         {
           success: false,
@@ -397,23 +395,45 @@ export async function POST(request: NextRequest): Promise<NextResponse<GoalRespo
           phases: [],
           summary: 'Invalid request: goal too short',
           totalDuration: Date.now() - startTime,
-          error: 'Goal must be at least 10 characters',
+          error: 'Input must be at least 5 characters',
         },
         { status: 400 }
       );
     }
 
-    // Configure orchestrator
-    const config: Partial<OrchestratorConfig> = {
-      skipExecution: options.skipExecution ?? false,
-      skipReflection: options.skipReflection ?? false,
-      enableOptimization: options.enableOptimization ?? true,
+    // Use unified AutoOpsAgent interface
+    const agent = new AutoOpsAgent({
       verboseLogging: options.verboseLogging ?? false,
-    };
+      enableReflection: !options.skipReflection,
+    });
 
-    // Create and run orchestrator
-    const orchestrator = createOrchestrator(config);
-    const result = await orchestrator.run(goal, context);
+    const agentResponse: AgentResponse = await agent.run(goal, context);
+
+    // If information query or clarification, return simplified response
+    if (agentResponse.mode === 'information' || agentResponse.mode === 'clarification') {
+      return NextResponse.json({
+        success: agentResponse.success,
+        goal: agentResponse.input,
+        runId: agentResponse.id,
+        timestamp: agentResponse.timestamp.toISOString(),
+        mode: agentResponse.mode,
+        intent: {
+          type: agentResponse.intent.intentType,
+          confidence: agentResponse.intent.confidence,
+          reasoning: agentResponse.intent.reasoning,
+          keywords: agentResponse.intent.keywords,
+        },
+        response: agentResponse.response,
+        reasoning: agentResponse.reasoning,
+        confidence: agentResponse.confidence,
+        phases: [],
+        summary: agentResponse.response,
+        totalDuration: Date.now() - startTime,
+      });
+    }
+
+    // For execution goals, use the full result
+    const result = agentResponse.executionDetails!;
 
     // Build response
     const response: GoalResponse = {
