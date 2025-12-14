@@ -1,0 +1,95 @@
+id: autoops_workflow
+namespace: hackathon.autoops
+
+description: |
+  Main AutoOps AI workflow for executing agent-generated tasks.
+  This workflow is triggered by the AutoOps Agent system.
+
+inputs:
+  - id: goal_id
+    type: STRING
+    required: true
+    description: Unique identifier for the goal
+  - id: goal_description
+    type: STRING
+    required: true
+    description: The user's goal description
+  - id: task_count
+    type: INT
+    required: true
+    description: Number of tasks to execute
+
+variables:
+  workflow_start: "{{ now() }}"
+  execution_id: "{{ execution.id }}"
+
+tasks:
+  - id: log_start
+    type: io.kestra.core.tasks.log.Log
+    message: "AutoOps workflow started for goal: {{ inputs.goal_description }}"
+
+  - id: initialize_agent
+    type: io.kestra.core.tasks.scripts.Bash
+    description: Initialize the agent execution environment
+    commands:
+      - echo "=== AutoOps AI Agent Workflow ==="
+      - echo "Goal ID: {{ inputs.goal_id }}"
+      - echo "Goal: {{ inputs.goal_description }}"
+      - echo "Tasks: {{ inputs.task_count }}"
+      - echo "Execution ID: {{ variables.execution_id }}"
+      - echo "Started at: {{ variables.workflow_start }}"
+
+  - id: simulate_task_execution
+    type: io.kestra.core.tasks.scripts.Bash
+    description: Execute automated tasks based on agent plan
+    dependsOn:
+      - initialize_agent
+    commands:
+      - echo "Executing automated tasks..."
+      - |
+        for i in $(seq 1 {{ inputs.task_count }}); do
+          echo "Task $i/{{ inputs.task_count }}: Processing..."
+          sleep 1
+          echo "Task $i/{{ inputs.task_count }}: Complete ✓"
+        done
+      - echo "All tasks completed successfully"
+
+  - id: generate_results
+    type: io.kestra.core.tasks.scripts.Python
+    description: Generate execution results and metrics
+    dependsOn:
+      - simulate_task_execution
+    inputFiles:
+      results.py: |
+        import json
+        from datetime import datetime
+        
+        results = {
+            "goal_id": "{{ inputs.goal_id }}",
+            "execution_id": "{{ variables.execution_id }}",
+            "tasks_completed": {{ inputs.task_count }},
+            "success_rate": 100,
+            "timestamp": datetime.now().isoformat(),
+            "status": "SUCCESS"
+        }
+        
+        print("=== Execution Results ===")
+        print(json.dumps(results, indent=2))
+    commands:
+      - python results.py
+
+  - id: log_end
+    type: io.kestra.core.tasks.log.Log
+    message: "AutoOps workflow finished successfully"
+    dependsOn:
+      - generate_results
+
+triggers:
+  - id: webhook_trigger
+    type: io.kestra.core.models.triggers.types.Webhook
+    key: "autoops-agent-{{ inputs.goal_id }}"
+
+errors:
+  - id: handle_failure
+    type: io.kestra.core.tasks.log.Log
+    message: "AutoOps workflow failed - check logs for details"
